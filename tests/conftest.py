@@ -117,10 +117,6 @@ def redis_client(compose: DockerCompose) -> Iterator[redis.Redis]:
         client.close()
 
 
-_STREAM = "sales.order"
-_CONSUMER_GROUPS = ("notifications", "analytics")
-
-
 @pytest.fixture(autouse=True)
 def clean_state(compose: DockerCompose) -> Iterator[None]:
     """Reset mutable state between tests.
@@ -128,15 +124,14 @@ def clean_state(compose: DockerCompose) -> Iterator[None]:
     - Sales DB: truncate the four operational tables (cascade for FKs).
     - notifications/analytics DBs: truncate projections AND the dedup
       table, so a new test's events look fresh to the consumers.
-    - Redis: FLUSHALL clears the stream AND every consumer group. After
-      that, recreate the two consumer groups (with MKSTREAM and id=0)
-      so the consumer threads -- which only call XGROUP CREATE once at
-      thread start -- can resume reading without restarting the
-      container. The brief sleep below gives the consumer loops a
-      chance to reacquire after the window where xreadgroup raised
-      NOGROUP.
+    - Redis: FLUSHALL clears the stream and every consumer group.
     - catalog/identity DBs are NOT touched -- their seeds are immutable
       fixtures for the integration suite.
+
+    The consumers now self-heal on NOGROUP (the consumer module
+    recreates the group reactively the next time XREADGROUP raises),
+    so we no longer recreate the groups from the harness after FLUSHALL.
+    One poll of latency is absorbed by the per-test timeouts.
     """
     _truncate_sales()
     _truncate_notifications()
@@ -145,19 +140,8 @@ def clean_state(compose: DockerCompose) -> Iterator[None]:
     r = redis.Redis(host="localhost", port=REDIS_PORT, db=0)
     try:
         r.flushall()
-        for group in _CONSUMER_GROUPS:
-            try:
-                r.xgroup_create(name=_STREAM, groupname=group, id="0", mkstream=True)
-            except redis.ResponseError as exc:
-                if "BUSYGROUP" not in str(exc):
-                    raise
     finally:
         r.close()
-
-    # The consumer threads sleep ~0.5s on xreadgroup errors, so wait
-    # long enough for them to retry against the fresh group before the
-    # test fires events.
-    time.sleep(1.0)
 
     yield
 
