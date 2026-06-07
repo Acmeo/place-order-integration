@@ -1,0 +1,220 @@
+# Master end-to-end stack for the place_order reference.
+#
+# This is the production-shaped topology: one Postgres with five
+# databases (sales, catalog, identity, notifications, analytics), one
+# Redis, Sales' four runtime processes plus its one-shot migration job
+# (five distinct Pants-built images, referenced here by tag), the real
+# catalog and identity services, the payment-gateway and shipping-carrier
+# fakes, and the notifications and analytics consumers.
+#
+# WireMock is gone -- every boundary is a real service. Sales is not
+# rebuilt here: `make images` runs `pants package src/sales/processes::`
+# in ../sales first to produce the five sales-*:latest images that this
+# compose references by tag.
+#
+# Host ports are mapped high enough to avoid clashing with anything a
+# developer might already have bound locally.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    ports:
+      - "35432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "36379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  # --- Sales: five distinct images built by Pants in ../sales ---
+
+  sales-migrate:
+    image: sales-migrate:latest
+    environment: &sales_env
+      SALES_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/sales
+      SALES_REDIS_URL: redis://redis:6379/0
+      SALES_CATALOG_BASE_URL: http://catalog:8000
+      SALES_IDENTITY_BASE_URL: http://identity:8000
+      SALES_PAYMENT_GATEWAY_BASE_URL: http://fake-payment-gateway:8000
+      SALES_SHIPPING_CARRIER_BASE_URL: http://fake-shipping-carrier:8000
+      SALES_OUTBOX_STREAM_PREFIX: sales
+      SALES_API_HOST: 0.0.0.0
+      SALES_API_PORT: "8000"
+      # Tight intervals so end-to-end tests do not wait for production cadence.
+      SALES_PAYMENT_HANDLER_POLL_INTERVAL_SECONDS: "1.0"
+      SALES_OUTBOX_RELAY_POLL_INTERVAL_SECONDS: "0.5"
+      SALES_SHIPPING_DISPATCHER_POLL_INTERVAL_SECONDS: "1.0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  sales-api:
+    image: sales-api:latest
+    environment: *sales_env
+    ports:
+      - "38000:8000"
+    depends_on:
+      sales-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      catalog:
+        condition: service_healthy
+      identity:
+        condition: service_healthy
+      fake-payment-gateway:
+        condition: service_healthy
+      fake-shipping-carrier:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://localhost:8000/v1/ready\", timeout=2).status==200 else 1)'"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  sales-payment-handler:
+    image: sales-payment-handler:latest
+    environment: *sales_env
+    depends_on:
+      sales-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      fake-payment-gateway:
+        condition: service_healthy
+
+  sales-outbox-relay:
+    image: sales-outbox-relay:latest
+    environment: *sales_env
+    depends_on:
+      sales-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  sales-shipping-dispatcher:
+    image: sales-shipping-dispatcher:latest
+    environment: *sales_env
+    depends_on:
+      sales-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      fake-shipping-carrier:
+        condition: service_healthy
+
+  # --- Real satellites (their own totalities) ---
+
+  catalog:
+    build:
+      context: ../catalog
+    environment:
+      CATALOG_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/catalog
+    ports:
+      - "38001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://localhost:8000/health\", timeout=2).status==200 else 1)'"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  identity:
+    build:
+      context: ../identity
+    environment:
+      IDENTITY_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/identity
+    ports:
+      - "38002:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://localhost:8000/health\", timeout=2).status==200 else 1)'"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # --- External-third-party fakes ---
+
+  fake-payment-gateway:
+    build:
+      context: ../fake-payment-gateway
+    ports:
+      - "38003:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://localhost:8000/health\", timeout=2).status==200 else 1)'"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  fake-shipping-carrier:
+    build:
+      context: ../fake-shipping-carrier
+    ports:
+      - "38004:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://localhost:8000/health\", timeout=2).status==200 else 1)'"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # --- Outbox consumers (downstream projections) ---
+
+  notifications:
+    build:
+      context: ../notifications
+    environment:
+      NOTIFICATIONS_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/notifications
+      NOTIFICATIONS_REDIS_URL: redis://redis:6379/0
+      NOTIFICATIONS_OUTBOX_STREAM_PREFIX: sales
+    ports:
+      - "38005:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://localhost:8000/health\", timeout=2).status==200 else 1)'"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  analytics:
+    build:
+      context: ../analytics
+    environment:
+      ANALYTICS_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/analytics
+      ANALYTICS_REDIS_URL: redis://redis:6379/0
+      ANALYTICS_OUTBOX_STREAM_PREFIX: sales
+    ports:
+      - "38006:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://localhost:8000/health\", timeout=2).status==200 else 1)'"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
