@@ -12,14 +12,16 @@ dev = [
     "psycopg[binary]>=3.2",
     "redis>=5.0",
     "testcontainers>=4.0",
+    "pyyaml>=6.0",
     "ruff>=0.6",
     "mypy>=1.11",
+    "types-pyyaml>=6.0",
 ]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["tests"]
+src = ["scripts", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N"]
@@ -27,7 +29,7 @@ select = ["E", "F", "I", "B", "UP", "N"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["tests"]
+files = ["scripts", "tests"]
 
 [[tool.mypy.overrides]]
 module = [

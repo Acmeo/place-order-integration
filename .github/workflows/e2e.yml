@@ -1,0 +1,271 @@
+name: e2e
+
+# This is the workhorse workflow of the bundle: every entry point that
+# proposes a version combination runs through here.
+#
+# - `repository_dispatch (service-released)` fires from each of the 7
+#   source repos' release workflows. It carries one {service, version}
+#   pair; the job overrides that one entry and pulls the rest from
+#   versions.yml. On green, an auto-PR is opened bumping the entry.
+# - `pull_request` validates manual edits to versions.yml the same way.
+# - `push` to main on versions.yml is a final gate after merge.
+# - `workflow_dispatch` exposes per-service version inputs for ad-hoc
+#   testing of arbitrary combinations.
+
+on:
+  repository_dispatch:
+    types: [service-released]
+  pull_request:
+    paths:
+      - "versions.yml"
+      - "docker-compose.yml"
+      - "docker-compose.override.yml"
+      - "scripts/**"
+      - "tests/**"
+      - ".github/workflows/e2e.yml"
+  push:
+    branches: [main]
+    paths:
+      - "versions.yml"
+      - "docker-compose.yml"
+      - "scripts/**"
+      - "tests/**"
+  workflow_dispatch:
+    inputs:
+      sales-api:
+        description: "sales-api version (defaults to versions.yml)"
+        required: false
+      sales-payment-handler:
+        description: "sales-payment-handler version"
+        required: false
+      sales-outbox-relay:
+        description: "sales-outbox-relay version"
+        required: false
+      sales-shipping-dispatcher:
+        description: "sales-shipping-dispatcher version"
+        required: false
+      sales-migrate:
+        description: "sales-migrate version"
+        required: false
+      catalog:
+        description: "catalog version"
+        required: false
+      identity:
+        description: "identity version"
+        required: false
+      fake-payment-gateway:
+        description: "fake-payment-gateway version"
+        required: false
+      fake-shipping-carrier:
+        description: "fake-shipping-carrier version"
+        required: false
+      notifications:
+        description: "notifications version"
+        required: false
+      analytics:
+        description: "analytics version"
+        required: false
+
+permissions:
+  contents: read
+  packages: read
+  # Needed by peter-evans/create-pull-request on the repository_dispatch path.
+  pull-requests: write
+
+env:
+  UV_VERSION: "0.8.22"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  e2e:
+    name: Bundle E2E
+    runs-on: ubuntu-latest
+    outputs:
+      bumped-service: ${{ steps.dispatch.outputs.service }}
+      bumped-version: ${{ steps.dispatch.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # tags are not strictly needed (we read versions.yml, not git
+          # tags) but `gh release` later in release.yml does want them;
+          # keep the test job aligned so caches hit.
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Install Python ${{ env.PYTHON_VERSION }}
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Sync dependencies (incl. dev)
+        run: uv sync
+
+      - name: Capture dispatch payload (if any)
+        id: dispatch
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          svc='${{ github.event.client_payload.service }}'
+          ver='${{ github.event.client_payload.version }}'
+          if [ -z "$svc" ] || [ -z "$ver" ]; then
+            echo "::error::dispatch payload missing service/version"
+            exit 1
+          fi
+          echo "service=$svc" >> "$GITHUB_OUTPUT"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Render .env (manifest + per-service overrides)
+        # On a dispatch we set ONE env var matching the released service
+        # so the renderer picks the new version up; everything else is
+        # read from versions.yml. On workflow_dispatch we honour every
+        # input that was provided. On pull_request / push we render
+        # the manifest as-is.
+        env:
+          OWNER: ${{ github.repository_owner }}
+          DISPATCH_SERVICE: ${{ steps.dispatch.outputs.service }}
+          DISPATCH_VERSION: ${{ steps.dispatch.outputs.version }}
+          # workflow_dispatch inputs:
+          IN_SALES_API: ${{ inputs.sales-api }}
+          IN_SALES_PAYMENT_HANDLER: ${{ inputs.sales-payment-handler }}
+          IN_SALES_OUTBOX_RELAY: ${{ inputs.sales-outbox-relay }}
+          IN_SALES_SHIPPING_DISPATCHER: ${{ inputs.sales-shipping-dispatcher }}
+          IN_SALES_MIGRATE: ${{ inputs.sales-migrate }}
+          IN_CATALOG: ${{ inputs.catalog }}
+          IN_IDENTITY: ${{ inputs.identity }}
+          IN_FAKE_PAYMENT_GATEWAY: ${{ inputs.fake-payment-gateway }}
+          IN_FAKE_SHIPPING_CARRIER: ${{ inputs.fake-shipping-carrier }}
+          IN_NOTIFICATIONS: ${{ inputs.notifications }}
+          IN_ANALYTICS: ${{ inputs.analytics }}
+        run: |
+          set -euo pipefail
+          # Translate workflow_dispatch inputs (lower-case dashed) into
+          # the env-var names the renderer reads ({UPPER_SNAKE}_VERSION).
+          for pair in \
+              "SALES_API:${IN_SALES_API:-}" \
+              "SALES_PAYMENT_HANDLER:${IN_SALES_PAYMENT_HANDLER:-}" \
+              "SALES_OUTBOX_RELAY:${IN_SALES_OUTBOX_RELAY:-}" \
+              "SALES_SHIPPING_DISPATCHER:${IN_SALES_SHIPPING_DISPATCHER:-}" \
+              "SALES_MIGRATE:${IN_SALES_MIGRATE:-}" \
+              "CATALOG:${IN_CATALOG:-}" \
+              "IDENTITY:${IN_IDENTITY:-}" \
+              "FAKE_PAYMENT_GATEWAY:${IN_FAKE_PAYMENT_GATEWAY:-}" \
+              "FAKE_SHIPPING_CARRIER:${IN_FAKE_SHIPPING_CARRIER:-}" \
+              "NOTIFICATIONS:${IN_NOTIFICATIONS:-}" \
+              "ANALYTICS:${IN_ANALYTICS:-}"; do
+            key="${pair%%:*}"
+            val="${pair#*:}"
+            if [ -n "$val" ]; then
+              echo "${key}_VERSION=$val" >> "$GITHUB_ENV"
+            fi
+          done
+          # Dispatch payload wins last so a repo-triggered run is
+          # explicit about which one service is being tested.
+          if [ -n "$DISPATCH_SERVICE" ]; then
+            key="$(echo "$DISPATCH_SERVICE" | tr '[:lower:]-' '[:upper:]_')_VERSION"
+            echo "${key}=${DISPATCH_VERSION}" >> "$GITHUB_ENV"
+          fi
+          uv run python scripts/render_env.py > .env
+          echo "---- .env ----"
+          cat .env
+
+      - name: Pull bundle from GHCR
+        # The override is intentionally skipped: this validates the actual
+        # registry tags, not local builds.
+        run: docker compose -f docker-compose.yml pull
+
+      - name: Bring stack up
+        run: docker compose -f docker-compose.yml up -d
+
+      - name: Run E2E suite
+        run: uv run pytest -x
+
+      - name: Tear down (always)
+        if: always()
+        run: docker compose -f docker-compose.yml down -v --remove-orphans
+
+  bump:
+    name: Open auto-PR to bump versions.yml
+    needs: e2e
+    if: github.event_name == 'repository_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Install Python ${{ env.PYTHON_VERSION }}
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Bump versions.yml
+        env:
+          SERVICE: ${{ needs.e2e.outputs.bumped-service }}
+          VERSION: ${{ needs.e2e.outputs.bumped-version }}
+        run: |
+          uv run python - <<'PY'
+          import os, sys
+          from pathlib import Path
+          import yaml
+          svc = os.environ["SERVICE"]
+          ver = os.environ["VERSION"]
+          path = Path("versions.yml")
+          data = yaml.safe_load(path.read_text())
+          if svc not in data.get("services", {}):
+              print(f"error: service '{svc}' not in versions.yml", file=sys.stderr)
+              sys.exit(1)
+          if data["services"][svc] == ver:
+              print(f"info: {svc} already at {ver}; no-op")
+              sys.exit(0)
+          data["services"][svc] = ver
+          # Preserve order + quoting style by editing the file textually
+          # rather than dumping a fresh YAML (which would lose the
+          # human-written comments).
+          text = path.read_text().splitlines()
+          out = []
+          import re
+          pattern = re.compile(rf'^(\s*{re.escape(svc)}:\s*)"[^"]+"(\s*)$')
+          for line in text:
+              m = pattern.match(line)
+              if m:
+                  out.append(f'{m.group(1)}"{ver}"{m.group(2)}')
+              else:
+                  out.append(line)
+          path.write_text("\n".join(out) + "\n")
+          PY
+
+      - name: Open PR
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "Bump ${{ needs.e2e.outputs.bumped-service }} to ${{ needs.e2e.outputs.bumped-version }}"
+          title: "Bump ${{ needs.e2e.outputs.bumped-service }} to ${{ needs.e2e.outputs.bumped-version }}"
+          body: |
+            Auto-PR opened by `${{ github.workflow }}` after E2E passed
+            against this bundle with the new version of
+            `${{ needs.e2e.outputs.bumped-service }}`.
+
+            Source dispatch: `${{ github.event.client_payload.service }}`@`${{ github.event.client_payload.version }}`.
+
+            Merging this PR records the combination as certified
+            compatible. A bundle release can be cut afterwards via
+            `git tag vYYYY.MM.<n> && git push --tags`.
+          branch: bump/${{ needs.e2e.outputs.bumped-service }}-${{ needs.e2e.outputs.bumped-version }}
+          base: main
+          delete-branch: true

@@ -1,0 +1,42 @@
+# place-order-integration: certified-compatible bundle.
+#
+# Each entry pins the image version of one of the 11 services that
+# make up the place_order reference. Every image is published to GHCR
+# by the matching repo's release workflow:
+#
+#   ghcr.io/${OWNER}/<service>:<version>
+#
+# Bumps to this file land via auto-PR after a satellite (or Sales)
+# publishes a new release and the E2E suite passes against the
+# resulting bundle. Tagged releases of this repo are immutable
+# snapshots of this manifest -- a "compatibility certificate" for the
+# pinned combination.
+#
+# Policy: changes between releases are expand/contract (every new
+# version is backwards-compatible with the previous bundle). For
+# genuinely breaking changes, the escape hatch is RC + coordinated
+# promotion -- see README.md.
+#
+# OWNER (the GHCR namespace) is supplied at render time via the OWNER
+# env var, not pinned here; it changes when the project is forked or
+# moves orgs.
+
+services:
+  # Sales (5 Pants-built images, one per process)
+  sales-api: "0.1.0"
+  sales-payment-handler: "0.1.0"
+  sales-outbox-relay: "0.1.0"
+  sales-shipping-dispatcher: "0.1.0"
+  sales-migrate: "0.1.0"
+
+  # Real satellites (own totalities)
+  catalog: "0.1.0"
+  identity: "0.1.0"
+
+  # Third-party fakes
+  fake-payment-gateway: "0.1.0"
+  fake-shipping-carrier: "0.1.0"
+
+  # Outbox consumers
+  notifications: "0.1.0"
+  analytics: "0.1.0"

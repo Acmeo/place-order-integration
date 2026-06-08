@@ -12,6 +12,9 @@ from prior orders.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -24,6 +27,8 @@ import redis
 from testcontainers.compose import DockerCompose
 
 _COMPOSE_DIR = Path(__file__).resolve().parent.parent
+_RENDER_SCRIPT = _COMPOSE_DIR / "scripts" / "render_env.py"
+_ENV_FILE = _COMPOSE_DIR / ".env"
 
 # Host port mappings (must match docker-compose.yml).
 POSTGRES_PORT = 35432
@@ -46,17 +51,44 @@ VALID_TOKEN = "session-token-integration"
 VALID_PRODUCT_ID = "prod-001"
 
 
+def _render_env_file() -> None:
+    """Render ``.env`` from versions.yml.
+
+    The compose file expects per-service ${<SERVICE>_VERSION} env vars
+    and a ${OWNER} for the GHCR namespace. Locally the override file
+    builds each satellite from the sibling repo and the resulting image
+    is tagged with whatever ${OWNER}/<service>:${version} evaluates to,
+    so OWNER defaults to ``local`` (the tag name does not affect the
+    build path). Tests that want to validate the actual GHCR bundle can
+    set OWNER themselves before invoking pytest.
+    """
+    env = os.environ.copy()
+    env.setdefault("OWNER", "local")
+    result = subprocess.run(
+        [sys.executable, str(_RENDER_SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    _ENV_FILE.write_text(result.stdout)
+
+
 @pytest.fixture(scope="session")
 def compose() -> Iterator[DockerCompose]:
     """Bring the master stack up for the whole session.
 
-    The compose references the five sales-*:latest images by tag, so
-    they must already exist in the Docker daemon. ``make images`` is
-    the prerequisite step; we do not pull or rebuild Sales here.
+    The compose references each service by ghcr.io/${OWNER}/...:${VERSION};
+    docker-compose.override.yml shadows that with local builds for the
+    six satellites and points the five Sales images at the local Pants
+    tags (sales-*:latest). Both files are passed to DockerCompose
+    explicitly because passing ``-f`` suppresses compose's automatic
+    override discovery.
     """
+    _render_env_file()
     with DockerCompose(
         str(_COMPOSE_DIR),
-        compose_file_name="docker-compose.yml",
+        compose_file_name=["docker-compose.yml", "docker-compose.override.yml"],
         pull=False,
         build=False,
     ) as c:

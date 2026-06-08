@@ -1,16 +1,19 @@
 # Master end-to-end stack for the place_order reference.
 #
-# This is the production-shaped topology: one Postgres with five
-# databases (sales, catalog, identity, notifications, analytics), one
-# Redis, Sales' four runtime processes plus its one-shot migration job
-# (five distinct Pants-built images, referenced here by tag), the real
-# catalog and identity services, the payment-gateway and shipping-carrier
-# fakes, and the notifications and analytics consumers.
+# This compose is the executable form of versions.yml: every service is
+# pulled by an explicit version from GHCR. The image references read
+# ${OWNER} and per-service ${<SERVICE>_VERSION} env vars from .env,
+# which is regenerated from versions.yml via:
 #
-# WireMock is gone -- every boundary is a real service. Sales is not
-# rebuilt here: `make images` runs `pants package src/sales/processes::`
-# in ../sales first to produce the five sales-*:latest images that this
-# compose references by tag.
+#     OWNER=<owner> uv run python scripts/render_env.py > .env
+#
+# For local development against the working tree, docker-compose.override.yml
+# replaces the `image:` references with `build:` against the sibling repos.
+# Compose merges both files automatically when you run `docker compose up`.
+#
+# WireMock is gone: every boundary is a real service. The five Sales
+# images, the two real satellites (catalog, identity), the two fakes,
+# and the two consumers each come from their own release pipeline.
 #
 # Host ports are mapped high enough to avoid clashing with anything a
 # developer might already have bound locally.
@@ -42,10 +45,10 @@ services:
       timeout: 3s
       retries: 30
 
-  # --- Sales: five distinct images built by Pants in ../sales ---
+  # --- Sales: five distinct images published by Sales' release.yml ---
 
   sales-migrate:
-    image: sales-migrate:latest
+    image: ghcr.io/${OWNER}/sales-migrate:${SALES_MIGRATE_VERSION}
     environment: &sales_env
       SALES_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/sales
       SALES_REDIS_URL: redis://redis:6379/0
@@ -65,7 +68,7 @@ services:
         condition: service_healthy
 
   sales-api:
-    image: sales-api:latest
+    image: ghcr.io/${OWNER}/sales-api:${SALES_API_VERSION}
     environment: *sales_env
     ports:
       - "38000:8000"
@@ -89,7 +92,7 @@ services:
       retries: 60
 
   sales-payment-handler:
-    image: sales-payment-handler:latest
+    image: ghcr.io/${OWNER}/sales-payment-handler:${SALES_PAYMENT_HANDLER_VERSION}
     environment: *sales_env
     depends_on:
       sales-migrate:
@@ -100,7 +103,7 @@ services:
         condition: service_healthy
 
   sales-outbox-relay:
-    image: sales-outbox-relay:latest
+    image: ghcr.io/${OWNER}/sales-outbox-relay:${SALES_OUTBOX_RELAY_VERSION}
     environment: *sales_env
     depends_on:
       sales-migrate:
@@ -109,7 +112,7 @@ services:
         condition: service_healthy
 
   sales-shipping-dispatcher:
-    image: sales-shipping-dispatcher:latest
+    image: ghcr.io/${OWNER}/sales-shipping-dispatcher:${SALES_SHIPPING_DISPATCHER_VERSION}
     environment: *sales_env
     depends_on:
       sales-migrate:
@@ -122,8 +125,7 @@ services:
   # --- Real satellites (their own totalities) ---
 
   catalog:
-    build:
-      context: ../catalog
+    image: ghcr.io/${OWNER}/catalog:${CATALOG_VERSION}
     environment:
       CATALOG_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/catalog
     ports:
@@ -138,8 +140,7 @@ services:
       retries: 30
 
   identity:
-    build:
-      context: ../identity
+    image: ghcr.io/${OWNER}/identity:${IDENTITY_VERSION}
     environment:
       IDENTITY_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/identity
     ports:
@@ -156,8 +157,7 @@ services:
   # --- External-third-party fakes ---
 
   fake-payment-gateway:
-    build:
-      context: ../fake-payment-gateway
+    image: ghcr.io/${OWNER}/fake-payment-gateway:${FAKE_PAYMENT_GATEWAY_VERSION}
     ports:
       - "38003:8000"
     healthcheck:
@@ -167,8 +167,7 @@ services:
       retries: 30
 
   fake-shipping-carrier:
-    build:
-      context: ../fake-shipping-carrier
+    image: ghcr.io/${OWNER}/fake-shipping-carrier:${FAKE_SHIPPING_CARRIER_VERSION}
     ports:
       - "38004:8000"
     healthcheck:
@@ -180,8 +179,7 @@ services:
   # --- Outbox consumers (downstream projections) ---
 
   notifications:
-    build:
-      context: ../notifications
+    image: ghcr.io/${OWNER}/notifications:${NOTIFICATIONS_VERSION}
     environment:
       NOTIFICATIONS_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/notifications
       NOTIFICATIONS_REDIS_URL: redis://redis:6379/0
@@ -200,8 +198,7 @@ services:
       retries: 30
 
   analytics:
-    build:
-      context: ../analytics
+    image: ghcr.io/${OWNER}/analytics:${ANALYTICS_VERSION}
     environment:
       ANALYTICS_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/analytics
       ANALYTICS_REDIS_URL: redis://redis:6379/0

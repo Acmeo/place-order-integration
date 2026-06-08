@@ -1,0 +1,158 @@
+name: release
+
+# Triggered when a CalVer tag is pushed to the repo (v2026.06.0, etc).
+# The workflow re-runs the E2E suite as a final gate against the GHCR
+# bundle exactly as `versions.yml` at the tagged commit declares it,
+# and -- on green -- creates a GitHub Release with the manifest and a
+# self-contained docker-compose as release assets, so anyone with the
+# tag can `wget && docker compose up` to reproduce the certified
+# bundle.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re-)release (vYYYY.MM.N)"
+        required: true
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  UV_VERSION: "0.8.22"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  validate-and-release:
+    name: Re-run E2E and publish GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve release tag
+        id: tag
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Install Python ${{ env.PYTHON_VERSION }}
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Sync dependencies (incl. dev)
+        run: uv sync
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Render .env from versions.yml
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          uv run python scripts/render_env.py > .env
+          cat .env
+
+      - name: Pull bundle from GHCR
+        run: docker compose -f docker-compose.yml pull
+
+      - name: Bring stack up
+        run: docker compose -f docker-compose.yml up -d
+
+      - name: Run E2E suite (final gate)
+        run: uv run pytest -x
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose -f docker-compose.yml down -v --remove-orphans
+
+      # --- Build release assets ---
+
+      - name: Stage release assets
+        id: assets
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          # Manifest + compose, both as-is. The compose's ${VAR}
+          # placeholders stay as placeholders -- consumers render their
+          # own .env with their OWNER and the manifest's versions.
+          cp versions.yml release-assets/versions.yml
+          cp docker-compose.yml release-assets/docker-compose.yml
+          # Also stage a pre-rendered compose with image refs frozen
+          # for the github.repository_owner that built this release,
+          # for the "just docker compose up" case.
+          uv run python - <<'PY'
+          import os, re
+          from pathlib import Path
+          import yaml
+          owner = os.environ["OWNER"].lower()
+          versions = yaml.safe_load(Path("versions.yml").read_text())["services"]
+          compose = Path("docker-compose.yml").read_text()
+          compose = compose.replace("${OWNER}", owner)
+          for svc, ver in versions.items():
+              var = svc.upper().replace("-", "_") + "_VERSION"
+              compose = compose.replace("${" + var + "}", ver)
+          Path("release-assets/docker-compose.frozen.yml").write_text(compose)
+          PY
+          ls -la release-assets
+
+      - name: Generate release notes
+        id: notes
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          {
+            echo "## Bundle ${TAG}"
+            echo ""
+            echo "All 11 services in this bundle have been validated end-to-end against each other."
+            echo ""
+            echo "### Pinned versions"
+            echo ""
+            echo '| Service | Version |'
+            echo '| --- | --- |'
+            uv run python - <<'PY'
+          from pathlib import Path
+          import yaml
+          for s, v in yaml.safe_load(Path("versions.yml").read_text())["services"].items():
+              print(f"| `{s}` | `{v}` |")
+          PY
+            echo ""
+            echo "### Reproducing the bundle"
+            echo ""
+            echo '```bash'
+            echo "gh release download ${TAG} --repo ${{ github.repository }}"
+            echo "docker compose -f docker-compose.frozen.yml up -d"
+            echo '```'
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          body_path: release-notes.md
+          files: |
+            release-assets/versions.yml
+            release-assets/docker-compose.yml
+            release-assets/docker-compose.frozen.yml
+          # CalVer tags are not semver, so disable any auto pre-release inference.
+          prerelease: false
+          make_latest: "true"
