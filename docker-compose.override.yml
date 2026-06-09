@@ -2,22 +2,29 @@
 #
 # docker-compose.yml references images by ghcr.io/${OWNER}/... so a
 # tagged bundle can be pulled and run anywhere. For developers iterating
-# locally (and for the in-repo integration tests), this overlay restores
-# the original behaviour: each satellite is BUILT from the sibling
-# working tree, and the five Sales images are taken from local Pants
-# tags (sales-*:latest) without any registry round trip.
+# locally (and for the in-repo integration tests), this overlay swaps
+# those references for pre-built local images: the five Sales tags
+# (sales-*:latest, as produced by `pants package` in ../sales) replace
+# the GHCR refs. The six satellites do NOT get an override here -- they
+# stay on the inherited ghcr.io/${OWNER}/<svc>:${<SVC>_VERSION} ref and
+# must already exist in the local Docker daemon, produced by either
+# `make image` in each satellite repo or `docker compose build` from
+# this directory (the integrator's `make compose-build` target does
+# this).
+#
+# Symmetry note: nothing in this overlay builds inline. Every service
+# is treated the same way -- a pre-built image must exist in the local
+# Docker daemon before `docker compose up`. That mirrors how Sales has
+# always worked (Pants produces images first) and removes the implicit
+# "compose builds for me on first up" path that only some services used
+# to have.
 #
 # Compose merges this file automatically when present. The release
 # workflow validates the actual GHCR bundle by invoking compose with
 # `-f docker-compose.yml` ONLY (the override is omitted explicitly).
-#
-# Behaviour: when both files set `image:`, the override wins. When the
-# override adds `build:`, compose builds locally and tags the resulting
-# image with whatever `image:` resolves to, so the rest of the compose
-# graph keeps working unchanged.
 
 services:
-  # --- Sales: locally tagged by Pants, no registry round trip ---
+  # --- Sales: locally tagged by Pants ---
 
   sales-migrate:
     image: sales-migrate:latest
@@ -33,29 +40,3 @@ services:
 
   sales-shipping-dispatcher:
     image: sales-shipping-dispatcher:latest
-
-  # --- Satellites: build from the sibling working tree ---
-
-  catalog:
-    build:
-      context: ../catalog
-
-  identity:
-    build:
-      context: ../identity
-
-  fake-payment-gateway:
-    build:
-      context: ../fake-payment-gateway
-
-  fake-shipping-carrier:
-    build:
-      context: ../fake-shipping-carrier
-
-  notifications:
-    build:
-      context: ../notifications
-
-  analytics:
-    build:
-      context: ../analytics
