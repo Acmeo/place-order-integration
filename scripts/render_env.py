@@ -7,12 +7,13 @@ a manifest (rather than baked into the compose) is what lets the
 auto-PR-on-release flow propose a single-file diff that the human
 reviews and merges.
 
-Usage:
-    OWNER=albertocasado uv run python scripts/render_env.py > .env
-
-OWNER is required and is *not* taken from versions.yml -- it changes
-when the project is forked or moves between users/orgs, and we do not
-want a fork to silently keep pulling someone else's namespace.
+Resolution order for OWNER:
+  1. The OWNER env var (used by CI workflows that set it to
+     github.repository_owner so a single fork can exercise its own
+     namespace without touching versions.yml).
+  2. The `owner:` field in versions.yml (the default for local runs).
+If neither is set we fail loudly rather than silently pull from
+ghcr.io/none/...
 
 Per-service overrides via env vars are honored, e.g.
     CATALOG_VERSION=0.2.0 uv run python scripts/render_env.py
@@ -41,16 +42,16 @@ def env_var_name(service: str) -> str:
 
 
 def main() -> int:
-    owner = os.environ.get("OWNER")
+    raw = yaml.safe_load(MANIFEST.read_text())
+
+    owner = os.environ.get("OWNER") or cast("str | None", raw.get("owner"))
     if not owner:
         print(
-            "error: OWNER env var is required (GHCR namespace, "
-            "ghcr.io/<owner>/*).",
+            "error: no OWNER env var and no `owner:` field in versions.yml.",
             file=sys.stderr,
         )
         return 2
 
-    raw = yaml.safe_load(MANIFEST.read_text())
     services = cast(dict[str, str], raw.get("services", {}))
     if not services:
         print(f"error: {MANIFEST} has no services map.", file=sys.stderr)

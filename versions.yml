@@ -1,10 +1,10 @@
 # place-order-integration: certified-compatible bundle.
 #
-# Each entry pins the image version of one of the 11 services that
-# make up the place_order reference. Every image is published to GHCR
-# by the matching repo's release workflow:
+# This file is the source of truth for the bundle: the GHCR namespace
+# all images are pulled from, plus the per-service pinned versions.
+# Every image is published to:
 #
-#   ghcr.io/${OWNER}/<service>:<version>
+#   ghcr.io/<owner>/<service>:<version>
 #
 # Bumps to this file land via auto-PR after a satellite (or Sales)
 # publishes a new release and the E2E suite passes against the
@@ -16,10 +16,11 @@
 # version is backwards-compatible with the previous bundle). For
 # genuinely breaking changes, the escape hatch is RC + coordinated
 # promotion -- see README.md.
-#
-# OWNER (the GHCR namespace) is supplied at render time via the OWNER
-# env var, not pinned here; it changes when the project is forked or
-# moves orgs.
+
+# GHCR namespace. Change this on a fork that publishes to a different
+# org/user. CI workflows override via the OWNER env var so a single
+# fork can run integration against upstream images if it wants to.
+owner: your-github-user
 
 services:
   # Sales (5 Pants-built images, one per process)

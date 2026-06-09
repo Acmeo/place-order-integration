@@ -1,0 +1,44 @@
+# Developer override template.
+#
+# Copy this file to docker-compose.override.yml (gitignored) and add
+# the services you want to consume from LOCAL builds instead of
+# pulling from ghcr.io/<owner>/...:
+#
+#     cp docker-compose.override.yml.example docker-compose.override.yml
+#
+# Compose auto-merges docker-compose.override.yml when present, and
+# the integrator's conftest passes it explicitly to testcontainers if
+# it exists. With no override file present `make test`/`make up`
+# pulls every service from GHCR at the version pinned in versions.yml.
+#
+# When DO you need an override?
+#
+# - Iterating on Sales locally. Sales' Pants build produces
+#   `sales-*:latest` (no namespace), so the GHCR ref does not match.
+#   Uncomment the Sales block below.
+# - Forcing a specific tag for a satellite (e.g. a feature-branch
+#   build). Otherwise satellites are normally NOT overridden: a
+#   `make image OWNER=<owner> VERSION=<version>` in the satellite repo
+#   already tags as ghcr.io/<owner>/<repo>:<version>, exactly what the
+#   compose ref resolves to, so the local image is picked up
+#   automatically without an entry here.
+#
+# Templates -- uncomment a block and adjust as needed:
+#
+# services:
+#   # ---- iterating on Sales (Pants tags are unnamespaced) ----
+#   sales-migrate:
+#     image: sales-migrate:latest
+#   sales-api:
+#     image: sales-api:latest
+#   sales-payment-handler:
+#     image: sales-payment-handler:latest
+#   sales-outbox-relay:
+#     image: sales-outbox-relay:latest
+#   sales-shipping-dispatcher:
+#     image: sales-shipping-dispatcher:latest
+#
+# services:
+#   # ---- forcing a specific satellite tag ----
+#   catalog:
+#     image: ghcr.io/<owner>/catalog:my-feature-branch

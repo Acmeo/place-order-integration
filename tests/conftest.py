@@ -55,18 +55,13 @@ def _render_env_file() -> None:
     """Render ``.env`` from versions.yml.
 
     The compose file expects per-service ${<SERVICE>_VERSION} env vars
-    and a ${OWNER} for the GHCR namespace. Locally the override file
-    builds each satellite from the sibling repo and the resulting image
-    is tagged with whatever ${OWNER}/<service>:${version} evaluates to,
-    so OWNER defaults to ``local`` (the tag name does not affect the
-    build path). Tests that want to validate the actual GHCR bundle can
-    set OWNER themselves before invoking pytest.
+    and a ${OWNER} for the GHCR namespace. The render script reads
+    OWNER from the manifest's `owner:` field unless an OWNER env var
+    is set (used by CI to point at ``github.repository_owner``).
     """
-    env = os.environ.copy()
-    env.setdefault("OWNER", "local")
     result = subprocess.run(
         [sys.executable, str(_RENDER_SCRIPT)],
-        env=env,
+        env=os.environ.copy(),
         capture_output=True,
         text=True,
         check=True,
@@ -74,21 +69,33 @@ def _render_env_file() -> None:
     _ENV_FILE.write_text(result.stdout)
 
 
+def _compose_files() -> list[str]:
+    """Pass the base compose to testcontainers, plus the developer
+    override iff it exists. testcontainers' DockerCompose translates
+    each entry into a ``-f`` flag, which suppresses compose's automatic
+    override discovery, so we have to opt-in explicitly.
+    """
+    files = ["docker-compose.yml"]
+    if (_COMPOSE_DIR / "docker-compose.override.yml").exists():
+        files.append("docker-compose.override.yml")
+    return files
+
+
 @pytest.fixture(scope="session")
 def compose() -> Iterator[DockerCompose]:
     """Bring the master stack up for the whole session.
 
-    The compose references each service by ghcr.io/${OWNER}/...:${VERSION};
-    docker-compose.override.yml shadows that with local builds for the
-    six satellites and points the five Sales images at the local Pants
-    tags (sales-*:latest). Both files are passed to DockerCompose
-    explicitly because passing ``-f`` suppresses compose's automatic
-    override discovery.
+    Every service is pulled from ghcr.io/${OWNER}/...:${VERSION} (with
+    OWNER + versions resolved from versions.yml). If a developer has
+    placed a ``docker-compose.override.yml`` in this directory (from
+    the ``.example`` template), compose merges it in to swap specific
+    services for local builds; otherwise the published bundle is what
+    gets exercised.
     """
     _render_env_file()
     with DockerCompose(
         str(_COMPOSE_DIR),
-        compose_file_name=["docker-compose.yml", "docker-compose.override.yml"],
+        compose_file_name=_compose_files(),
         pull=False,
         build=False,
     ) as c:

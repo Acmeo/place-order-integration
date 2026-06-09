@@ -17,9 +17,27 @@ that turn out to be the same job:
   releases of this repo are immutable snapshots of the manifest — a
   "compatibility certificate" for the pinned combination.
 
+## Self-contained
+
+This repo references **nothing outside itself**: no `../sales`, no
+`../catalog`, nothing on disk. The default execution path is
+
+```bash
+make test     # render .env, pull missing images from GHCR, run E2E
+```
+
+which exercises whatever combination `versions.yml` pins. Cloning
+just this repo is enough to run integration tests against any
+published bundle.
+
+For local iteration on a specific service, see *Iterating locally*
+below.
+
 ## Manifest: `versions.yml`
 
 ```yaml
+owner: your-github-user   # GHCR namespace; CI overrides via OWNER env
+
 services:
   sales-api: "0.1.0"
   sales-payment-handler: "0.1.0"
@@ -150,32 +168,65 @@ combination, not an API version).
 
 ## Running
 
-### Local development (build from sibling repos)
+### Default: pull-from-GHCR
 
 ```bash
-# 1. Produce the five sales-*:latest images via Pants.
-make sales-images
-
-# 2. Build the satellites and run the suite. The override file builds
-#    each satellite from ../<repo>; OWNER defaults to `local`.
-make full
+make test
 ```
 
-### Bundle validation (pull tagged images from GHCR)
+`make test` renders `.env` from `versions.yml` and runs the E2E suite.
+The test harness brings the compose stack up; `docker compose` pulls
+every image not present locally from `ghcr.io/<owner>/<service>:<version>`
+using the manifest's pinned versions.
+
+`OWNER` is read from the `owner:` field in `versions.yml`. If you need
+a different namespace for one run (e.g. testing against a fork), set
+`OWNER=<other>` on the command line — env wins over the manifest.
+
+### Iterating locally on one service
+
+You don't need an override to test a local satellite build: if you run
 
 ```bash
-OWNER=<your-github-username> make test-bundle
+# in ../catalog, with OWNER and VERSION matching versions.yml
+make image
 ```
 
-This invokes compose with `-f docker-compose.yml` only (the override
-is omitted), so every service is pulled from GHCR at the version
-pinned in `versions.yml` at HEAD.
+the resulting image is tagged `ghcr.io/<owner>/catalog:<version>`,
+which is exactly what the compose ref resolves to. Compose uses the
+local copy because it's already present; the other 10 services are
+still pulled from GHCR. No override needed.
+
+You only need an override when the local image *cannot* match the
+expected tag. The main case is **iterating on Sales**: its Pants build
+produces `sales-*:latest` (no namespace), so the GHCR ref won't
+match. Copy the template and uncomment the Sales block:
+
+```bash
+cp docker-compose.override.yml.example docker-compose.override.yml
+$EDITOR docker-compose.override.yml      # uncomment the Sales block
+make test
+```
+
+The override file is gitignored — personal local edits never get
+committed to the bundle.
+
+### Bundle validation (override skipped)
+
+```bash
+make test-bundle
+```
+
+Invokes compose with `-f docker-compose.yml` only, so any local
+override is skipped and you exercise the published bundle verbatim.
+This is what `release.yml` runs as the final gate before publishing a
+GitHub Release.
 
 ### Manual ad-hoc combination
 
-The `e2e.yml` workflow exposes a `workflow_dispatch` with per-service
-inputs (default to the manifest values). Use the Actions tab to test
-a specific combination without touching `versions.yml`.
+`e2e.yml` exposes a `workflow_dispatch` with per-service inputs
+(defaulting to the manifest values). Use the Actions tab to test an
+arbitrary combination without touching `versions.yml`.
 
 ## Layout
 
