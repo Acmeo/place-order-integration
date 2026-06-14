@@ -17,6 +17,98 @@ that turn out to be the same job:
   releases of this repo are immutable snapshots of the manifest — a
   "compatibility certificate" for the pinned combination.
 
+## About this reference
+
+This repository is the integration point of a reference implementation
+accompanying a six-article series on distributed systems architecture by
+Alberto Casado Martin. The series argues that most distributed systems are
+*attributive totalities* — their parts only acquire meaning in relation to
+the whole — and that the canonical microservices reparto routinely confuses
+them with *distributive totalities* (sets of independent peers). The full
+list of articles is at the bottom of this README; the fifth and sixth
+articles describe what this repository wires together and why.
+
+### What this repo is, in that frame
+
+`place-order-integration` is the **materialisation of the e-commerce in
+executable form** — the place where the formal parts of the system actually
+run together against real infrastructure, exercising the `place_order` flow
+end-to-end. It is **not the complete e-commerce**: the reference implements
+only the subset of formal parts needed to make `place_order` demonstrable
+(Sales, catalog, identity, notifications, analytics). A real e-commerce
+would have Reviews, Search, Recommendations, and other formal parts that are
+deliberately out of scope here.
+
+The composition this repo orchestrates is shaped by the formal / material
+distinction the fourth article makes explicit:
+
+- **Formal parts implemented for real:** Sales (as five process images out
+  of one repository — `sales-api`, `payment-handler`, `outbox-relay`,
+  `shipping-dispatcher`, `sales-migrate`), `catalog`, `identity`,
+  `notifications`, `analytics`. Each has its own repo, image, and CI.
+- **Material parts of the e-commerce, simulated** because they are third
+  parties from our cut and there is nothing of ours to implement there:
+  `fake-payment-gateway`, `fake-shipping-carrier`. They model their
+  contracts faithfully and nothing more.
+- **Material parts of the e-commerce, real:** Postgres and Redis, run as
+  real containers. They are determined by Sales' schemas, queries and
+  outbox conventions (per article four, *involution* — a determinable
+  totality made into a material part by the formal nexus that consumes it).
+
+### What this repo verifies
+
+The end-to-end suite exercises the three situations that the bad cut would
+need an entire substrate of saga / outbox-everywhere / compensation /
+reconciliation to survive, and that the right cut simply absorbs:
+
+1. **Happy path** (`pm-integration`): an order closes synchronously
+   (`201 CONFIRMED`), the outbox-relay publishes `OrderConfirmed`,
+   `shipping-dispatcher` arranges shipping, `notifications` and `analytics`
+   project both events. The full chain in finite time.
+
+2. **Payment declined** (`pm-decline`): the external gateway responds 402.
+   The order is cancelled cleanly. The only thing unwound is the charge
+   attempted at the external boundary — because there is no internal saga
+   to compensate, there is nothing internal to roll back. `notifications`
+   projects `ORDER_CANCELLED` with the decline reason; `analytics` counts
+   the cancellation; revenue does not move.
+
+3. **Gateway 503 → recovery** (`pm-503-once`): the synchronous attempt
+   sees a 503 and the order remains `PENDING`. The Sales `payment-handler`
+   process retries on its own poll cadence, reuses the same idempotency
+   key, the fake gateway now succeeds, and the order reaches `CONFIRMED`.
+   The series points to this as the canonical demonstration that the
+   distributed-systems machinery (idempotency keys) lives at the real
+   boundary — and that, placed there, it is what makes recovery from
+   transient failures possible without a coordinated rollback across
+   internal services.
+
+### Reading the topology
+
+Per the sixth article: *"the map of where idempotency appears in the code
+turns out to be the map of the totality's real boundaries."* In this bundle:
+
+- Idempotency keys flow from Sales to the two fakes (real-third-party
+  boundaries).
+- `event_id` dedup lives inside `notifications` and `analytics` (the
+  broker boundary between Sales and downstream totalities).
+- Inside Sales — between its four processes — there is *none* of this:
+  they share one database and coordinate by local transactions.
+
+If you are an agent modifying this reference, that map is the diagnostic
+you should preserve. If a change requires sprouting saga / dedup / outbox
+*inside* Sales, you are about to misplace a cut. If a change requires
+removing idempotency at a boundary that already has it, you are about to
+make a real boundary unsafe to retry.
+
+### Not a template
+
+The four-totality shape implemented here is not a reparto to copy by
+reflex — that reflex is the disease the whole series has described. What
+this repository offers is narrower: a single honest cut, carried all the
+way to something that runs, so the central claim of the series stops being
+something you take on faith.
+
 ## Self-contained
 
 This repo references **nothing outside itself**: no `../sales`, no
@@ -248,3 +340,15 @@ tests/
   test_exactly_once.py
 versions.yml      the manifest (source of truth for the bundle)
 ```
+
+## Article series
+
+URLs will be filled in once each article is published; placeholders below are
+search-and-replaceable.
+
+1. [The Illusion of Microservices Independence](TODO-article-1-url)
+2. [Is Going Back to Monoliths Really the Solution?](TODO-article-2-url)
+3. [The Forgotten Transition: From Analysis to Design, in a Field That Stopped Asking](TODO-article-3-url)
+4. [The Illusion of Method: How Domain-Driven Design Hides the Question It Claims to Answer](TODO-article-4-url)
+5. [Place Order: Anatomy of a Bad Cut](TODO-article-5-url)
+6. [Place Order: A Cut That Holds](TODO-article-6-url)
