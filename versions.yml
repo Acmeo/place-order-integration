@@ -20,7 +20,7 @@
 # GHCR namespace. Change this on a fork that publishes to a different
 # org/user. CI workflows override via the OWNER env var so a single
 # fork can run integration against upstream images if it wants to.
-owner: your-github-user
+owner: Acmeo
 
 services:
   # Sales (5 Pants-built images, one per process)
