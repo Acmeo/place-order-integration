@@ -31,7 +31,7 @@ services:
   sales-migrate: "0.1.0"
 
   # Real satellites (own totalities)
-  catalog: "0.1.0"
+  catalog: "0.1.1"
   identity: "0.1.0"
 
   # Third-party fakes
