@@ -343,12 +343,9 @@ versions.yml      the manifest (source of truth for the bundle)
 
 ## Article series
 
-URLs will be filled in once each article is published; placeholders below are
-search-and-replaceable.
-
-1. [The Illusion of Microservices Independence](TODO-article-1-url)
-2. [Is Going Back to Monoliths Really the Solution?](TODO-article-2-url)
-3. [The Forgotten Transition: From Analysis to Design, in a Field That Stopped Asking](TODO-article-3-url)
-4. [The Illusion of Method: How Domain-Driven Design Hides the Question It Claims to Answer](TODO-article-4-url)
-5. [Place Order: Anatomy of a Bad Cut](TODO-article-5-url)
-6. [Place Order: A Cut That Holds](TODO-article-6-url)
+1. [The Illusion of Microservices Independence](https://www.linkedin.com/pulse/illusion-microservices-independence-alberto-casado-martin-9kwue/)
+2. [Is Going Back to Monoliths Really the Solution?](https://www.linkedin.com/pulse/going-back-monoliths-really-solution-alberto-casado-martin-qlqxe/)
+3. [The Forgotten Transition: From Analysis to Design, in a Field That Stopped Asking](https://www.linkedin.com/pulse/forgotten-transition-from-analysis-design-field-alberto-casado-martin-fiwle/)
+4. [The Illusion of Method: How Domain-Driven Design Hides the Question It Claims to Answer](https://www.linkedin.com/pulse/illusion-method-how-domain-driven-design-hides-claims-casado-martin-sk5ee/)
+5. [Place Order: Anatomy of a Bad Cut](https://www.linkedin.com/pulse/place-order-anatomy-bad-cut-alberto-casado-martin-9wz8e/)
+6. [Place Order: A Cut That Holds](https://www.linkedin.com/pulse/place-order-cut-holds-alberto-casado-martin-escve/)
