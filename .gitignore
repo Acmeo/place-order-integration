@@ -8,7 +8,6 @@ dist/
 build/
 *.egg-info/
 .env
-uv.lock
 
 # Per-developer override for local iteration. Copy
 # docker-compose.override.yml.example as the starting point. We do
